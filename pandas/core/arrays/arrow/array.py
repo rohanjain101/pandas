@@ -126,11 +126,13 @@ if not pa_version_under10p1:
     def floordiv_compat(
         left: pa.ChunkedArray | pa.Array | pa.Scalar,
         right: pa.ChunkedArray | pa.Array | pa.Scalar,
+        computing_modulus: bool = False,
     ) -> pa.ChunkedArray:
         if pa.types.is_integer(left.type) and pa.types.is_integer(right.type):
             # Use divide_checked to ensure cases like -9223372036854775808 // -1
             # don't silently overflow.
-            divided = pc.divide_checked(left, right)
+            pc_func = pc.divide if computing_modulus else pc.divide_checked
+            divided = pc_func(left, right)
             # GH 56676: avoid storing intermediate calculating in floating point type.
             has_remainder = pc.not_equal(pc.multiply(divided, right), left)
             result = pc.if_else(
@@ -154,7 +156,8 @@ if not pa_version_under10p1:
             )
             # Ensure compatibility with older versions of pandas where
             # int8 // int64 returned int8 rather than int64.
-            result = result.cast(left.type)
+            if not computing_modulus:
+                result = result.cast(left.type)
         else:
             # Use divide instead of divide_checked to match numpy
             # floordiv where divide by 0 returns infinity for floating
@@ -163,14 +166,39 @@ if not pa_version_under10p1:
             result = pc.floor(divided)
         return result
 
-    def divmod_compat(
+    def mod_compat(
         left: pa.ChunkedArray | pa.Array | pa.Scalar,
         right: pa.ChunkedArray | pa.Array | pa.Scalar,
-    ) -> tuple[pa.ChunkedArray, pa.ChunkedArray]:
+    ) -> pa.ChunkedArray:
         # (x % y) = x - (x // y) * y
         # TODO: Should be replaced with corresponding arrow compute
         # method when available
         # https://lists.apache.org/thread/h3t6nz1ys2k2hnbrjvwyoxkf70cps8sh
+        floordiv_result = floordiv_compat(left, right, computing_modulus=True)
+        modulus_result = pc.subtract(left, pc.multiply(floordiv_result, right))
+        if pa.types.is_signed_integer(left.type) and pa.types.is_signed_integer(
+            right.type
+        ):
+            # Ensure cases like -9223372036854775808 % -1 do not overflow.
+            overflow_dividend = pa.scalar(
+                -1 << (left.type.bit_width - 1), type=left.type
+            )
+            overflow_divisor = pa.scalar(-1, type=right.type)
+            modulus_result = pc.if_else(
+                pc.and_(
+                    pc.equal(left, overflow_dividend), pc.equal(right, overflow_divisor)
+                ),
+                pa.scalar(0, type=modulus_result.type),
+                modulus_result,
+            )
+        return modulus_result
+
+    def divmod_compat(
+        left: pa.ChunkedArray | pa.Array | pa.Scalar,
+        right: pa.ChunkedArray | pa.Array | pa.Scalar,
+    ) -> tuple[pa.ChunkedArray, pa.ChunkedArray]:
+        # Don't need to worry about overflow for modulus, because
+        # in overflow case, floordiv will overflow anyways.
         floordiv_result = floordiv_compat(left, right)
         modulus_result = pc.subtract(left, pc.multiply(floordiv_result, right))
         return floordiv_result, modulus_result
@@ -186,8 +214,8 @@ if not pa_version_under10p1:
         "rtruediv": lambda x, y: pc.divide(y, cast_for_truediv(x, y)),
         "floordiv": lambda x, y: floordiv_compat(x, y),
         "rfloordiv": lambda x, y: floordiv_compat(y, x),
-        "mod": lambda x, y: divmod_compat(x, y)[1],
-        "rmod": lambda x, y: divmod_compat(y, x)[1],
+        "mod": lambda x, y: mod_compat(x, y),
+        "rmod": lambda x, y: mod_compat(y, x),
         "divmod": lambda x, y: divmod_compat(x, y),
         "rdivmod": lambda x, y: divmod_compat(y, x),
         "pow": pc.power_checked,
