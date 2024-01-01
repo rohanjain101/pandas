@@ -127,12 +127,34 @@ if not pa_version_under10p1:
         left: pa.ChunkedArray | pa.Array | pa.Scalar,
         right: pa.ChunkedArray | pa.Array | pa.Scalar,
     ) -> pa.ChunkedArray:
-        # Ensure int // int -> int mirroring Python/Numpy behavior
-        # as pc.floor(pc.divide_checked(int, int)) -> float
-        converted_left = cast_for_truediv(left, right)
-        result = pc.floor(pc.divide(converted_left, right))
-        if pa.types.is_integer(left.type) and pa.types.is_integer(right.type):
+        divided = pc.divide(left, right)
+        if pa.types.is_integer(divided.type):
+            # GH 56676: avoid storing intermediate calculating in floating point type.
+            has_remainder = pc.not_equal(pc.multiply(divided, right), left)
+            result = pc.if_else(
+                # Pass a typed arrow scalar rather than stdlib int
+                # which always inferred as int64, to prevent overflow
+                # in case of large uint64 values.
+                pc.and_(
+                    pc.less(
+                        pc.bit_wise_xor(left, right), pa.scalar(0, type=divided.type)
+                    ),
+                    has_remainder,
+                ),
+                # GH 55561: floordiv should round towards negative infinity.
+                # pv.divide for integral types rounds towards 0.
+                # Avoid using subtract_checked which would incorrectly raise
+                # for -9223372036854775808 // 1, because if integer overflow
+                # occurs, then has_remainder should be false, and overflowed
+                # value is discarded.
+                pc.subtract(divided, pa.scalar(1, type=divided.type)),
+                divided,
+            )
+            # Ensure compatibility with older versions of pandas where
+            # int8 // int64 returned int8 rather than int64.
             result = result.cast(left.type)
+        else:
+            result = pc.floor(divided)
         return result
 
     def divmod_compat(

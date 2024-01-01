@@ -3308,11 +3308,34 @@ def test_arrow_reflected_divmod(left, right):
 
 
 def test_arrow_floordiv_large_values():
-    # GH 55561
+    # GH 56645
     a = pd.Series([1425801600000000000], dtype="int64[pyarrow]")
     expected = pd.Series([1425801600000], dtype="int64[pyarrow]")
     result = a // 1_000_000
     tm.assert_series_equal(result, expected)
+
+
+def test_arrow_floordiv_large_integral_result():
+    # GH 56676
+    a = pd.Series([18014398509481983, -9223372036854775808], dtype="int64[pyarrow]")
+    result = a // 1
+    tm.assert_series_equal(result, a)
+
+
+def test_arrow_floordiv_larger_divisor():
+    # GH 56676
+    a = pd.Series([-23], dtype="int64[pyarrow]")
+    result = a // 24
+    expected = pd.Series([-1], dtype="int64[pyarrow]")
+    tm.assert_series_equal(result, expected)
+
+
+def test_arrow_floordiv_no_overflow():
+    # GH 56676
+    a = pd.Series([9223372036854775808], dtype="uint64[pyarrow]")
+    b = pd.Series([1], dtype="uint64[pyarrow]")
+    result = a // b
+    tm.assert_series_equal(result, a)
 
 
 def test_string_to_datetime_parsing_cast():
