@@ -932,7 +932,7 @@ class TestArrowArray(base.ExtensionTests):
         self, op_name: str, obj, other
     ) -> type[Exception] | None:
         if op_name in ("__divmod__", "__rdivmod__"):
-            return self.divmod_exc
+            return (pa.lib.ArrowInvalid, NotImplementedError)
 
         dtype = tm.get_dtype(obj)
         # error: Item "dtype[Any]" of "dtype[Any] | ExtensionDtype" has no
@@ -944,7 +944,7 @@ class TestArrowArray(base.ExtensionTests):
             "__mod__",
             "__rmod__",
         }:
-            exc = NotImplementedError
+            exc = pa.lib.ArrowInvalid
         elif arrow_temporal_supported:
             exc = None
         elif op_name in ["__add__", "__radd__"] and (
@@ -984,7 +984,15 @@ class TestArrowArray(base.ExtensionTests):
             pa.types.is_time(pa_dtype)
             or (
                 opname
-                in ("__truediv__", "__rtruediv__", "__floordiv__", "__rfloordiv__")
+                in (
+                    "__truediv__",
+                    "__rtruediv__",
+                    "__floordiv__",
+                    "__rfloordiv__" "__rmod__",
+                    "__rdivmod__",
+                    "__mod__",
+                    "__rdivmod__",
+                )
                 and pa.types.is_duration(pa_dtype)
             )
         ):

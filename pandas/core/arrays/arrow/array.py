@@ -127,6 +127,7 @@ if not pa_version_under10p1:
     def floordiv_compat(
         left: pa.ChunkedArray | pa.Array | pa.Scalar,
         right: pa.ChunkedArray | pa.Array | pa.Scalar,
+        raise_on_floating_divide_by_0: bool = False,
     ) -> pa.ChunkedArray:
         # TODO: Replace with pyarrow floordiv kernel.
         # https://github.com/apache/arrow/issues/39386
@@ -152,7 +153,8 @@ if not pa_version_under10p1:
                 result = divided
             result = result.cast(left.type)
         else:
-            divided = pc.divide(left, right)
+            pa_func = pc.divide_checked if raise_on_floating_divide_by_0 else pc.divide
+            divided = pa_func(left, right)
             result = pc.floor(divided)
         return result
 
@@ -178,19 +180,17 @@ if not pa_version_under10p1:
                 pc.add(remainder, right),
                 remainder,
             )
-            if left.bit_width == 64:
-                min_value = np.iinfo(np.int64).min
-                modulus_result = pc.if_else(
-                    pc.and_(
-                        pc.equal(left, min_value),
-                        pc.equal(right, pa.scalar(-1, type=right.type)),
-                    ),
-                    pa.scalar(0, modulus_result.type),
-                    modulus_result,
-                )
+            min_value = pa.scalar(-1 << (left.type.bit_width - 1), type=left.type)
+            modulus_result = pc.if_else(
+                pc.and_(
+                    pc.equal(left, min_value),
+                    pc.equal(right, pa.scalar(-1, type=right.type)),
+                ),
+                pa.scalar(0, modulus_result.type),
+                modulus_result,
+            )
         else:
-            floordiv_result = floordiv_compat(left, right)
-            modulus_result = pc.subtract(left, pc.multiply(floordiv_result, right))
+            modulus_result = divmod_compat(left, right)[1]
 
         return modulus_result
 
@@ -198,7 +198,9 @@ if not pa_version_under10p1:
         left: pa.ChunkedArray | pa.Array | pa.Scalar,
         right: pa.ChunkedArray | pa.Array | pa.Scalar,
     ) -> tuple[pa.ChunkedArray, pa.ChunkedArray]:
-        floordiv_result = floordiv_compat(left, right)
+        floordiv_result = floordiv_compat(
+            left, right, raise_on_floating_divide_by_0=True
+        )
         modulus_result = pc.subtract(left, pc.multiply(floordiv_result, right))
         return floordiv_result, modulus_result
 
