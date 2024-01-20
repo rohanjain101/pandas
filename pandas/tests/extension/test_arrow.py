@@ -1904,16 +1904,21 @@ def test_str_match(pat, case, na, exp):
 @pytest.mark.parametrize(
     "pat, case, na, exp",
     [
-        ["abc", False, None, [True, None]],
-        ["Abc", True, None, [False, None]],
-        ["bc", True, None, [False, None]],
-        ["ab", False, True, [True, True]],
-        ["a[a-z]{2}", False, None, [True, None]],
-        ["A[a-z]{1}", True, None, [False, None]],
+        ["abc", False, None, [True, True, False, None]],
+        ["Abc", True, None, [False, False, False, None]],
+        ["bc", True, None, [False, False, False, None]],
+        ["ab", False, None, [True, True, False, None]],
+        ["a[a-z]{2}", False, None, [True, True, False, None]],
+        ["A[a-z]{1}", True, None, [False, False, False, None]],
+        # GH Issue: #56652
+        ["abc$", False, None, [True, False, False, None]],
+        ["abc\\$", False, None, [False, True, False, None]],
+        ["Abc$", True, None, [False, False, False, None]],
+        ["Abc\\$", True, None, [False, False, False, None]],
     ],
 )
 def test_str_fullmatch(pat, case, na, exp):
-    ser = pd.Series(["abc", None], dtype=ArrowDtype(pa.string()))
+    ser = pd.Series(["abc", "abc$", "$abc", None], dtype=ArrowDtype(pa.string()))
     result = ser.str.match(pat, case=case, na=na)
     expected = pd.Series(exp, dtype=ArrowDtype(pa.bool_()))
     tm.assert_series_equal(result, expected)
@@ -3230,6 +3235,22 @@ def test_factorize_chunked_dictionary():
     tm.assert_index_equal(res_uniques, exp_uniques)
 
 
+def test_dictionary_astype_categorical():
+    # GH#56672
+    arrs = [
+        pa.array(np.array(["a", "x", "c", "a"])).dictionary_encode(),
+        pa.array(np.array(["a", "d", "c"])).dictionary_encode(),
+    ]
+    ser = pd.Series(ArrowExtensionArray(pa.chunked_array(arrs)))
+    result = ser.astype("category")
+    categories = pd.Index(["a", "x", "c", "d"], dtype=ArrowDtype(pa.string()))
+    expected = pd.Series(
+        ["a", "x", "c", "a", "a", "d", "c"],
+        dtype=pd.CategoricalDtype(categories=categories),
+    )
+    tm.assert_series_equal(result, expected)
+
+
 def test_arrow_floordiv():
     # GH 55561
     a = pd.Series([-7], dtype="int64[pyarrow]")
@@ -3247,60 +3268,71 @@ def test_arrow_floordiv_large_values():
     tm.assert_series_equal(result, expected)
 
 
-def test_arrow_floordiv_large_integral_result():
+@pytest.mark.parametrize("dtype", ["int64[pyarrow]", "uint64[pyarrow]"])
+def test_arrow_floordiv_large_integral_result(dtype):
     # GH 56676
-    a = pd.Series([18014398509481983, -9223372036854775808], dtype="int64[pyarrow]")
+    a = pd.Series([18014398509481983], dtype=dtype)
     result = a // 1
     tm.assert_series_equal(result, a)
 
 
-def test_arrow_floordiv_larger_divisor():
+@pytest.mark.parametrize("pa_type", tm.SIGNED_INT_PYARROW_DTYPES)
+def test_arrow_floordiv_larger_divisor(pa_type):
     # GH 56676
-    a = pd.Series([-23], dtype="int64[pyarrow]")
+    dtype = ArrowDtype(pa_type)
+    a = pd.Series([-23], dtype=dtype)
     result = a // 24
-    expected = pd.Series([-1], dtype="int64[pyarrow]")
+    expected = pd.Series([-1], dtype=dtype)
     tm.assert_series_equal(result, expected)
 
 
-def test_arrow_floordiv_integral_invalid():
+@pytest.mark.parametrize("pa_type", tm.SIGNED_INT_PYARROW_DTYPES)
+def test_arrow_floordiv_integral_invalid(pa_type):
     # GH 56676
-    a = pd.Series([-9223372036854775808], dtype="int64[pyarrow]")
-    with pytest.raises(pa.lib.ArrowInvalid, match="overflow"):
+    min_value = np.iinfo(pa_type.to_pandas_dtype()).min
+    a = pd.Series([min_value], dtype=ArrowDtype(pa_type))
+    with pytest.raises(pa.lib.ArrowInvalid, match="overflow|not in range"):
         a // -1
     with pytest.raises(pa.lib.ArrowInvalid, match="divide by zero"):
         a // 0
 
 
-def test_arrow_floordiv_floating_0_divisor():
+@pytest.mark.parametrize("dtype", tm.FLOAT_PYARROW_DTYPES_STR_REPR)
+def test_arrow_floordiv_floating_0_divisor(dtype):
     # GH 56676
-    a = pd.Series([2], dtype="double[pyarrow]")
+    a = pd.Series([2], dtype=dtype)
     result = a // 0
-    expected = pd.Series([float("inf")], dtype="double[pyarrow]")
+    expected = pd.Series([float("inf")], dtype=dtype)
     tm.assert_series_equal(result, expected)
 
 
-def test_arrow_floordiv_no_overflow():
+@pytest.mark.parametrize("pa_type", tm.ALL_INT_PYARROW_DTYPES)
+def test_arrow_integral_floordiv_large_values(pa_type):
     # GH 56676
-    a = pd.Series([9223372036854775808], dtype="uint64[pyarrow]")
-    b = pd.Series([1], dtype="uint64[pyarrow]")
+    max_value = np.iinfo(pa_type.to_pandas_dtype()).max
+    dtype = ArrowDtype(pa_type)
+    a = pd.Series([max_value], dtype=dtype)
+    b = pd.Series([1], dtype=dtype)
     result = a // b
     tm.assert_series_equal(result, a)
 
 
-def test_arrow_true_division_large_divisor():
+@pytest.mark.parametrize("dtype", ["int64[pyarrow]", "uint64[pyarrow]"])
+def test_arrow_true_division_large_divisor(dtype):
     # GH 56706
-    a = pd.Series([0], dtype="int64[pyarrow]")
-    b = pd.Series([18014398509481983], dtype="int64[pyarrow]")
+    a = pd.Series([0], dtype=dtype)
+    b = pd.Series([18014398509481983], dtype=dtype)
     expected = pd.Series([0], dtype="float64[pyarrow]")
     result = a / b
     tm.assert_series_equal(result, expected)
 
 
-def test_arrow_floor_division_large_divisor():
+@pytest.mark.parametrize("dtype", ["int64[pyarrow]", "uint64[pyarrow]"])
+def test_arrow_floor_division_large_divisor(dtype):
     # GH 56706
-    a = pd.Series([0], dtype="int64[pyarrow]")
-    b = pd.Series([18014398509481983], dtype="int64[pyarrow]")
-    expected = pd.Series([0], dtype="int64[pyarrow]")
+    a = pd.Series([0], dtype=dtype)
+    b = pd.Series([18014398509481983], dtype=dtype)
+    expected = pd.Series([0], dtype=dtype)
     result = a // b
     tm.assert_series_equal(result, expected)
 
