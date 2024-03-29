@@ -730,3 +730,18 @@ b,j,y
     )
     expected = DataFrame([["a", "i"], ["b", "j"]], dtype="string[pyarrow]")
     tm.assert_frame_equal(result, expected)
+
+
+def test_skip_header(pyarrow_parser_only):
+    parser = pyarrow_parser_only
+    data = """
+a,i,x
+b,j,y
+"""
+    result = parser.read_csv(
+        StringIO(data),
+        header=0,
+        engine="pyarrow",
+    )
+    expected = DataFrame({"a": ["b"], "i": ["j"], "x": ["y"]})
+    tm.assert_frame_equal(result, expected)
